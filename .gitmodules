@@ -1,0 +1,3 @@
+[submodule "Unimpressive.Core"]
+	path = Unimpressive.Core
+	url = https://github.com/microdee/Unimpressive.Core.git
