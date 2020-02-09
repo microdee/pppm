@@ -20,6 +20,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Unimpressive.Core\Unimpressive.Core\Unimpressive.Core.csproj" />
+    <ProjectReference Include="..\Unimpressive.Core\Unimpressive.Poweshell\Unimpressive.Poweshell.csproj" />
   </ItemGroup>
 
 </Project>
