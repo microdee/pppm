@@ -9,6 +9,7 @@ using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading.Tasks;
 using JetBrains.Annotations;
+using Unimpressive.Poweshell;
 
 namespace pppm
 {
@@ -16,6 +17,10 @@ namespace pppm
     /// To support isolation for individual package management sessions
     /// this class allows to have extra state stored for said session
     /// </summary>
+    /// <remarks>
+    /// This class is partial so thematically necessary "global" states
+    /// can be written in the respective source file.
+    /// </remarks>
     public partial class PppmCmdletState : ICmdletHosted
     {
         /// <inheritdoc cref="ICmdletHosted"/>
@@ -66,20 +71,6 @@ namespace pppm
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public static PppmCmdletState GetPppmState(this PSCmdlet cmdlet) => 
             _cmdletStates.GetOrAdd(cmdlet, key => new PppmCmdletState().HostedIn(key));
-
-        /// <summary>
-        /// Shortcut to <see cref="PSCmdlet.WriteError"/>
-        /// </summary>
-        /// <param name="cmdlet"></param>
-        /// <param name="error"></param>
-        /// <param name="errorCat"></param>
-        /// <param name="targetObj"></param>
-        public static void WriteError(this PSCmdlet cmdlet, string error, ErrorCategory errorCat = ErrorCategory.InvalidOperation, object targetObj = null)
-        {
-            targetObj ??= cmdlet;
-            var errrec = new ErrorRecord(new Exception(error), "SimpleStringError", errorCat, targetObj);
-            cmdlet.WriteError(errrec);
-        }
 
         /// <summary>
         /// Version of the currently loaded uppm.Core
