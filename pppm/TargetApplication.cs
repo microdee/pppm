@@ -52,6 +52,7 @@ namespace pppm
         Local = 2,
     }
 
+    /// <inheritdoc/>
     public partial class PppmCmdletState
     {
         private TargetApp _currentTargetApp;
@@ -81,6 +82,9 @@ namespace pppm
         }
     }
 
+    /// <summary>
+    /// Global methods for TargetApps for Cmdlet contexts
+    /// </summary>
     public static class TargetAppExt
     {
         /// <summary>
@@ -115,25 +119,11 @@ namespace pppm
     /// Packages can target any associated application it manages packages for.
     /// This class contains information about such a target application
     /// </summary>
-    public abstract class TargetApp
+    public abstract class TargetApp : ICmdletHosted
     {
+        public PSCmdlet CmdletHost { get; set; }
+
         public static readonly Architecture[] SupportedArchitectures = {Architecture.x64, Architecture.x86};
-        
-        /// <summary>
-        /// Register known target applications from an assembly
-        /// </summary>
-        /// <param name="assembly"></param>
-        public static void RegisterApps(Assembly assembly)
-        {
-            var enginetypes = assembly.GetTypes().Where(
-                t => t.IsClass && !t.IsAbstract && t.IsSubclassOf(typeof(TargetApp))
-            );
-            foreach (var enginetype in enginetypes)
-            {
-                var engine = enginetype.CreateInstance() as TargetApp;
-                engine?.RegisterAsKnownApp();
-            }
-        }
         
         protected string PAppFolder;
         protected string PGlobalPacksFolder;
@@ -163,7 +153,7 @@ namespace pppm
                     if (_appArch == Architecture.Native)
                     {
                         _appArch = GetArchitecture();
-                        Log.Verbose("Determining architecture of {TargetApp} for the first time ({Arch})", ShortName, _appArch);
+                        CmdletHost.WriteVerbose($"Determining architecture of {ShortName} for the first time ({_appArch})");
                     }
                 }
                 else _appArch = DefaultArchitecture;
@@ -256,18 +246,6 @@ namespace pppm
             }
         }
 
-        /// <summary>
-        /// Registers this target application as a known one so packages can use it.
-        /// </summary>
-        /// <returns></returns>
-        public TargetApp RegisterAsKnownApp()
-        {
-            DefaultRepository.RegisterRepository();
-            KnownTargetApps.UpdateGeneric(ShortName, this);
-            Log.Verbose("Registering {TargetApp} as known target application", ShortName);
-            return this;
-        }
-
         public TargetApp SetAsCurrentApp()
         {
             CurrentTargetApp?.DefaultRepository?.UnregisterDefaultRepository();
@@ -312,49 +290,9 @@ namespace pppm
         }
 
         /// <inheritdoc />
-        public ILogger Log { get; }
-
-        /// <inheritdoc />
         public event UppmProgressHandler OnProgress;
 
         /// <inheritdoc />
         public void InvokeProgress(ProgressEventArgs progress) => OnProgress?.Invoke(this, progress);
-    }
-
-    /// <summary>
-    /// In case the current package manager is the target application
-    /// </summary>
-    public class CurrentUppmApp : TargetApp
-    {
-        /// <inheritdoc />
-        public override bool TryGetInstalledPackage(PartialPackageReference packref, InstalledPackageScope scope, out Package pack)
-        {
-            Logging.NotYetImplemented();
-            pack = null;
-            return false;
-        }
-
-        /// <inheritdoc />
-        public override void EnumerateInstalledPackages(InstalledPackageScope scope, Func<Package, bool> action)
-        {
-            Logging.NotYetImplemented();
-        }
-
-        /// <inheritdoc />
-        public override string AppFolder
-        {
-            get => Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
-            set { }
-        }
-
-        /// <inheritdoc />
-        public override string GlobalPacksFolder
-        {
-            get => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), Uppm.Implementation.GetSystemName());
-            set { }
-        }
-
-        /// <inheritdoc />
-        public override string ShortName => Uppm.Implementation.GetSystemName();
     }
 }
