@@ -1,16 +1,18 @@
 <# { pppm: 1.0 app
     
+    // mandatory:
     ShortName: temp
+    DefaultRepository: https://github.com/yolo/swag.git
+
+    // optional
     DefaultArchitecture: x64
 } #>
 
 <#
     variables are determined when pppm reads this module
-    and it will cache its results into the user's database
-    of available target applications on their computer
 
     during processing TargetApp descriptions Current Folder
-    is set to the folder containing this pack
+    is set to the folder containing this module
 #> 
 
 [string] $executable = "$(Get-Location)\path\to.exe"
@@ -26,7 +28,7 @@ Export-ModuleMember -Variable $appRoot
 #>
 
 function GetGlobalPacksFolder {
-    return "$($targetApp.Dir)/packs"
+    return "$($targetApp.AppRoot)/packs"
 }
 
 function GetLocalPacksFolder {
@@ -38,8 +40,7 @@ function GetLocalPacksFolder {
     this includes:
       * during reading the module
       * whenever respective information is needed
-      * even after the module is removed from the Powershellf
-        context
+      * even after the module is removed from the Powershell context
         * Any variables used in the function outside of its scope
           are actually captured in their backing ScriptBlock,
           so they "keep their value" even if the module is removed
@@ -72,7 +73,10 @@ function Get-InstalledPacks {
         [bool] $isGlobal
     )
     Get-ChildItem (if($isGlobal) {GetGlobalPacksFolder} else {GetLocalPacksFolder}) -Filter *.3pm.psm1 |
-        ForEach-Object { Get-Content $_ }
+        ForEach-Object {
+            # do not use Get-Content as it's pipeing every new line separately
+            [System.IO.File]::ReadAllText($_)
+        }
 }
 Export-ModuleMember -Function Get-InstalledPacks
 
