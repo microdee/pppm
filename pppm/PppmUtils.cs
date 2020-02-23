@@ -7,8 +7,12 @@ using System.Management.Automation;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using Hjson;
 using JetBrains.Annotations;
+using Newtonsoft.Json.Linq;
+using Unimpressive.Core.json;
 using Unimpressive.Poweshell;
 
 namespace pppm
@@ -55,6 +59,23 @@ namespace pppm
         }
     }
 
+    public class IncompatiblePppmScriptException : Exception
+    {
+        public IncompatiblePppmScriptException()
+            : base($"Couldn't determined the required pppm script standard of the script")
+        { }
+        public IncompatiblePppmScriptException(string message) : base(message) { }
+    }
+
+    public enum ScriptUsage : byte
+    {
+        Unknown,
+        Pack,
+        App,
+        AppCache,
+        // Any = 0xFF
+    }
+
     /// <summary>
     /// Pppm utilities
     /// </summary>
@@ -76,5 +97,82 @@ namespace pppm
         /// Version of the currently loaded uppm.Core
         /// </summary>
         public static PppmVersion Version { get; } = new PppmVersion(typeof(PppmVersion).Assembly.GetName().Version);
+
+        /// <summary>
+        /// Version of the currently loaded uppm.Core
+        /// </summary>
+        public static PppmVersion CompatibleScriptStandard { get; } = new PppmVersion(1,0);
+
+        /// <summary>
+        /// Function checking the compatibility of the script with the standard the current version of pppm compatible with.
+        /// </summary>
+        /// <param name="meta"></param>
+        /// <param name="targetUsage"></param>
+        /// <param name="throwOnIncompatible"></param>
+        /// <returns></returns>
+        public static bool IsScriptCompatible(JObject meta, ScriptUsage targetUsage, bool throwOnIncompatible = false)
+        {
+            if (!meta.TryGetFromPath("$.pppm", out string verText))
+            {
+                if(throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException();
+                return false;
+            }
+
+            var splitted = verText.Split(' ');
+            if (splitted.Length < 2)
+            {
+                if (throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException($"Invalid syntax while determining the required pppm standard of a script\n({verText})");
+                return false;
+            }
+
+            if (!ScriptUsage.TryParse(splitted[1], out ScriptUsage usage))
+            {
+                if (throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException($"Specified usage of pppm script is invalid\n({verText})");
+                return false;
+            }
+
+            if (usage != targetUsage)
+            {
+                if (throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException($"Wrong usage is specified for a pppm script\n(specified: {usage}, expected: {targetUsage})");
+                return false;
+            }
+
+            if (!PppmVersion.TryParse(splitted[0], out var reqVersion))
+            {
+                if (throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException($"Invalid syntax while determining the required pppm standard of a script\n({verText})");
+                return false;
+            }
+
+            if (
+                CompatibleScriptStandard <= reqVersion ||
+                CompatibleScriptStandard.Major != reqVersion.Major
+            ) {
+                if (throwOnIncompatible)
+                    throw new IncompatiblePppmScriptException($"Trying to use a script incompatible with the current script standard of pppm.\n(pppm {Version} is compatible with {CompatibleScriptStandard}, but script requires {reqVersion})");
+                return false;
+            }
+
+            return true;
+        }
+
+        /// <summary>
+        /// Get the pppm Hjson meta comment of a Powershell script/module. Returns null if there's none
+        /// </summary>
+        /// <param name="psScript"></param>
+        /// <returns></returns>
+        [CanBeNull]
+        public static JObject GetPsMetaComment([NotNull] string psScript)
+        {
+            var metargx = new Regex(@"\<#\s*(?<hjson>{\s*pppm:.*?})\s*?#\>", RegexOptions.Singleline);
+            var match = metargx.Match(psScript);
+            if (!match.Success)
+                return null;
+            return JObject.Parse(HjsonValue.Parse(match.Groups["hjson"].Value));
+        }
     }
 }
