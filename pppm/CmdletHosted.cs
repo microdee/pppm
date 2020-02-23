@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Management.Automation;
 using System.Text;
+using JetBrains.Annotations;
 
 namespace pppm
 {
@@ -17,6 +18,7 @@ namespace pppm
         /// <param name="target"></param>
         /// <param name="host"></param>
         /// <returns></returns>
+        [NotNull]
         public static T HostedIn<T>(this T target, PSCmdlet host) where T : ICmdletHosted
         {
             target.CmdletHost = host;

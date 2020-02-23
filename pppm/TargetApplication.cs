@@ -12,6 +12,9 @@ using System.Threading.Tasks;
 using JetBrains.Annotations;
 using Microsoft.Win32;
 using pppm.Repositories;
+using Unimpressive.Core;
+using Unimpressive.Core.json;
+using Unimpressive.Poweshell;
 
 namespace pppm
 {
@@ -61,6 +64,8 @@ namespace pppm
         /// Known applications for the current Cmdlet session
         /// </summary>
         public readonly ConcurrentDictionary<string, TargetApp> KnownTargetApps = new ConcurrentDictionary<string, TargetApp>();
+
+        private Stack<TargetApp> _currentAppStack;
 
         /// <summary>
         /// The globally inferred target application, unless a package specifies a different one
@@ -119,27 +124,82 @@ namespace pppm
     /// Packages can target any associated application it manages packages for.
     /// This class contains information about such a target application
     /// </summary>
-    public abstract class TargetApp : ICmdletHosted
+    public class TargetApp : ICmdletHosted
     {
+        private bool _isInitialized;
+        private string _defaultRepoRef;
+        private PSModuleInfo _appModule;
+        private FunctionInfo _getFolderForPackFunc;
+        private FunctionInfo _getInstalledPacksFunc;
+        private PSVariable _exePath;
+        private PSVariable _appRoot;
+
+        private Architecture _appArch = Architecture.Native;
+
         public PSCmdlet CmdletHost { get; set; }
 
+        private void SafeGet<T>(Dictionary<string, T> dict, string key, string prefix, string type, out T value)
+        {
+            if (!dict.TryGetValue(key, out value))
+                throw new KeyNotFoundException($"The {prefix}{key} {type} was not exported from the //TODO:appName module.");
+        }
+
+        [NotNull]
+        public TargetApp Initialize(string appModulePath)
+        {
+            if (_isInitialized) return this;
+            if (CmdletHost == null)
+                throw new NullReferenceException("The host Cmdlet for this Target App was not set before initialization.");
+
+            _isInitialized = true;
+
+            if (string.IsNullOrWhiteSpace(appModulePath) ||
+                !appModulePath.EndsWithCaseless(".3pmTarget.psm1") ||
+                !File.Exists(appModulePath))
+                throw new ArgumentException("Referenced path does not point to a valid pppm Target Application module.");
+
+            var meta = Pppm.GetPsMetaComment(File.ReadAllText(appModulePath));
+            if(meta == null)
+                throw new ArgumentException("Referenced pppm Target Application module doesn't contain required meta comment.");
+
+            Pppm.IsScriptCompatible(meta, ScriptUsage.App, true);
+
+            ShortName = meta["ShortName"].ToString();
+            _defaultRepoRef = meta["DefaultRepository"].ToString();
+
+            if (!PackageRepository.TryCreateRepository(_defaultRepoRef, out var defRepo))
+                throw new ArgumentException($"Cannot gather default repository for {ShortName}.");
+            DefaultRepository = defRepo;
+
+            if (meta.TryGetValue("DefaultArchitecture", out var defArchJt))
+                DefaultArchitecture = defArchJt.ToObject<Architecture>();
+
+            _appModule = CmdletHost.ImportModule(appModulePath);
+
+            var vars = _appModule.ExportedVariables;
+            SafeGet(vars, "executable", "$", "variable", out _exePath);
+            SafeGet(vars, "appRoot", "$", "variable", out _appRoot);
+
+            var funcs = _appModule.ExportedFunctions;
+            SafeGet(funcs, "Get-FolderForPack", "", "function", out _getFolderForPackFunc);
+            SafeGet(funcs, "Get-InstalledPacks", "", "function", out _getInstalledPacksFunc);
+
+            CmdletHost.RemoveModule(_appModule.Name);
+
+            return this;
+        }
+
         public static readonly Architecture[] SupportedArchitectures = {Architecture.x64, Architecture.x86};
-        
-        protected string PAppFolder;
-        protected string PGlobalPacksFolder;
-        protected string PLocalPacksFolder;
 
         /// <summary>
         /// Short, friendly name of the application (like "ue4" or "vvvv")
         /// </summary>
-        public virtual string ShortName { get; set; }
+        public string ShortName { get; private set; }
 
         /// <summary>
         /// Desired architecture if it can't be determined from the target application (i.e.: the executable doesn't exist yet)
         /// </summary>
-        public Architecture DefaultArchitecture { get; set; } = Architecture.x64;
-
-        private Architecture _appArch = Architecture.Native;
+        public Architecture DefaultArchitecture { get; private set; } = Architecture.x64;
 
         /// <summary>
         /// Actual machine type of the target application
@@ -148,7 +208,7 @@ namespace pppm
         {
             get
             {
-                if (File.Exists(AbsoluteExe))
+                if (File.Exists(Executable))
                 {
                     if (_appArch == Architecture.Native)
                     {
@@ -160,10 +220,12 @@ namespace pppm
 
                 if (_appArch == Architecture.Native)
                 {
-                    _appArch = Logging.AskUserEnum(
-                        $"Default architecture for {ShortName} was not specified and it can't be automatically determined. Please choose one:",
+                    _appArch = CmdletHost.PromptForEnum(
+                        $"Please choose an arhitecture for {ShortName}:",
+                        $"Default architecture for {ShortName} was not specified and it can't be automatically determined.",
                         SupportedArchitectures,
-                        Architecture.x64);
+                        Architecture.x64
+                    );
                 }
                 return _appArch;
             }
@@ -176,82 +238,36 @@ namespace pppm
         /// <param name="pack"></param>
         /// <returns></returns>
         /// <remarks>Implementation must construct the full package including the script engine. Constructing the dependency tree is not required</remarks>
-        public abstract bool TryGetInstalledPackage(PartialPackageReference packref, InstalledPackageScope scope, out Package pack);
+        public bool TryGetInstalledPackage(PartialPackageReference packref, InstalledPackageScope scope, out Package pack);
 
         /// <summary>
         /// Enumerate all installed packages in specified scope. Return false in your function to break enumeration.
         /// </summary>
         /// <param name="scope"></param>
         /// <param name="action"></param>
-        public abstract void EnumerateInstalledPackages(InstalledPackageScope scope, Func<Package, bool> action);
+        public void EnumerateInstalledPackages(InstalledPackageScope scope, Func<Package, bool> action);
                 
         /// <summary>
         /// Containing folder of the application. Override setter for validation and inference.
         /// </summary>
-        public virtual string AppFolder
-        {
-            get => PAppFolder;
-            set => PAppFolder = CurrentOrNewFolder(value);
-        }
+        public string AppRoot => _appRoot.Value.ToString();
 
         /// <summary>
-        /// Folder for the packs installed at global scope. Override setter for validation and inference.
+        /// Path to Executable of the TargetApp
         /// </summary>
-        public virtual string GlobalPacksFolder
-        {
-            get => PGlobalPacksFolder;
-            set => PGlobalPacksFolder = CurrentOrNewFolder(value);
-        }
-
-        /// <summary>
-        /// Folder for the packs installed at local scope. Override setter for validation and inference.
-        /// </summary>
-        public virtual string LocalPacksFolder
-        {
-            get => PLocalPacksFolder;
-            set => PLocalPacksFolder = CurrentOrNewFolder(value);
-        }
-
-        /// <summary>
-        /// Executable filename without path
-        /// </summary>
-        public virtual string Executable { get; set; }
+        public string Executable => _exePath.Value.ToString();
 
         /// <summary>
         /// The default package repository for this application
         /// </summary>
-        public virtual IPackageRepository DefaultRepository { get; }
-
-        /// <summary>
-        /// Full path to executable
-        /// </summary>
-        public string AbsoluteExe => Path.GetFullPath(Path.Combine(AppFolder, Executable));
-
-        /// <summary>
-        /// If input is empty then return current directory, else return the absolute
-        /// path to the potentially relative directory. If given directory doesn't exist
-        /// create it.
-        /// </summary>
-        /// <param name="dir"></param>
-        /// <returns>Absolute path</returns>
-        protected string CurrentOrNewFolder(string dir)
-        {
-            if (string.IsNullOrWhiteSpace(dir)) return Environment.CurrentDirectory;
-            var adir = Path.GetFullPath(dir);
-            if (Directory.Exists(adir)) return adir;
-            else
-            {
-                Directory.CreateDirectory(adir);
-                return adir;
-            }
-        }
+        public virtual IPackageRepository DefaultRepository { get; private set; }
 
         public TargetApp SetAsCurrentApp()
         {
-            CurrentTargetApp?.DefaultRepository?.UnregisterDefaultRepository();
+            CmdletHost.GetPppmState().CurrentTargetApp?.DefaultRepository?.UnregisterDefaultRepository();
             DefaultRepository.RegisterRepository();
-            KnownTargetApps.UpdateGeneric(ShortName, this);
-            CurrentTargetApp = this;
+            CmdletHost.GetPppmState().KnownTargetApps.UpdateGeneric(ShortName, this);
+            CmdletHost.GetPppmState().CurrentTargetApp = this;
             return this;
         }
 
@@ -264,7 +280,7 @@ namespace pppm
             const int PE_POINTER_OFFSET = 60;
             const int MACHINE_OFFSET = 4;
             byte[] data = new byte[4096];
-            using (Stream s = new FileStream(AbsoluteExe, FileMode.Open, FileAccess.Read))
+            using (Stream s = new FileStream(Executable, FileMode.Open, FileAccess.Read))
             {
                 s.Read(data, 0, 4096);
             }
@@ -280,19 +296,8 @@ namespace pppm
         /// <returns></returns>
         public virtual PppmVersion GetVersion()
         {
-            var vinfo = FileVersionInfo.GetVersionInfo(AbsoluteExe);
+            var vinfo = FileVersionInfo.GetVersionInfo(Executable);
             return new PppmVersion(vinfo.FileMajorPart, vinfo.FileMinorPart, vinfo.FileBuildPart);
         }
-
-        public TargetApp()
-        {
-            Log = this.GetContext();
-        }
-
-        /// <inheritdoc />
-        public event UppmProgressHandler OnProgress;
-
-        /// <inheritdoc />
-        public void InvokeProgress(ProgressEventArgs progress) => OnProgress?.Invoke(this, progress);
     }
 }
